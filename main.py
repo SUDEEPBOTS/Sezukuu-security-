@@ -39,21 +39,19 @@ from models import (
 )
 from moderation import moderate_message, evaluate_appeal
 
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-pending_appeals = {}   # user_id → chat_id (group id)
-appeal_counts = {}     # user_id → number of appeals
+# --------------- GLOBALS ----------------
+pending_appeals = {}       # user_id → set of group_ids
+appeal_counts  = {}        # user_id → count
 
 
-# ───────────── ADMIN CHECK ─────────────
-
+# --------------- ADMIN CHECK ----------------
 async def is_admin(update, context):
     chat = update.effective_chat
     user = update.effective_user
 
-    # OWNER ko hamesha bypass
     if OWNER_ID and user.id == OWNER_ID:
         return True
 
@@ -61,46 +59,113 @@ async def is_admin(update, context):
     return member.status in ["administrator", "creator"]
 
 
-# ───────────── HELPER: TEMP MESSAGE (AUTO DELETE) ─────────────
-
-async def send_temp_message(chat, text: str, seconds: int = 20):
-    """
-    Group me action message send karega,
-    aur 'seconds' ke baad auto delete kar dega.
-    """
+# --------------- TEMP MESSAGE ----------------
+async def send_temp_message(chat, text, seconds=15):
     try:
         msg = await chat.send_message(text)
-    except Exception:
+    except:
         return
-
+    await asyncio.sleep(seconds)
     try:
-        await asyncio.sleep(seconds)
         await msg.delete()
-    except Exception:
-        # agar delete fail ho jaye (rights / already deleted) to ignore
+    except:
         pass
 
 
-# ───────────── COMMANDS ─────────────
-
+# ---------------------------------------------------------
+#                      START + VERIFY
+# ---------------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
+    bot = context.bot
 
     add_user(user.id, user.username or user.first_name)
 
+    # GROUP /start
     if chat.type != "private":
         add_group(chat.id, chat.title, user.id)
-        return await update.message.reply_text(
-            "🤖 AI Moderator Active.\nUse /setrule to add rules."
+        return await update.message.reply_text("🤖 AI Moderator Ready.")
+
+    # DM verification: /start verify_<groupid>
+    if context.args and context.args[0].startswith("verify_"):
+        try:
+            group_id = int(context.args[0].split("_")[1])
+        except:
+            return await update.message.reply_text("Invalid verify link.")
+
+        # Unmute user in group
+        try:
+            await bot.restrict_chat_member(
+                group_id,
+                user.id,
+                ChatPermissions(
+                    can_send_messages=True,
+                    can_send_media_messages=True,
+                    can_send_other_messages=True,
+                    can_add_web_page_previews=True,
+                )
+            )
+        except:
+            pass
+
+        # DM success msg
+        await update.message.reply_text("✅ Verified successfully!")
+
+        # Inform group
+        try:
+            await bot.send_message(
+                group_id,
+                f"{user.first_name} is now verified and unmuted! ✅"
+            )
+        except:
+            pass
+
+        return
+
+    # Normal DM start
+    await update.message.reply_text("Use /appeal if banned.")
+
+
+# ----------------- WELCOME + VERIFY BUTTON -----------------
+async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.effective_message
+    chat = update.effective_chat
+    bot = context.bot
+
+    new_members = message.new_chat_members
+    if not new_members:
+        return
+
+    bot_username = bot.username
+
+    for member in new_members:
+        if member.is_bot:
+            continue
+
+        add_user(member.id, member.username or member.first_name)
+
+        # Mute new user
+        try:
+            await chat.restrict_member(member.id, ChatPermissions(can_send_messages=False))
+        except:
+            pass
+
+        verify_link = f"https://t.me/{bot_username}?start=verify_{chat.id}"
+
+        kb = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("✅ Verify", url=verify_link)]]
         )
 
-    await update.message.reply_text(
-        "👋 This is AI moderation bot.\n"
-        "Use /appeal in DM if banned."
-    )
+        await chat.send_message(
+            f"Welcome {member.first_name}! 👋\nPlease verify to chat.",
+            reply_markup=kb
+        )
 
 
+# ---------------------------------------------------------
+#                        RULES
+# ---------------------------------------------------------
 async def setrule(update, context):
     if not await is_admin(update, context):
         return await update.message.reply_text("Admin only.")
@@ -112,7 +177,6 @@ async def setrule(update, context):
         return await update.message.reply_text("Usage: /setrule <rule>")
 
     add_rule_db(chat_id, text)
-
     rules = get_rules_db(chat_id)
     rr = "\n".join([f"{i+1}. {r}" for i, r in enumerate(rules)])
 
@@ -132,9 +196,7 @@ async def status(update, context):
     if not await is_admin(update, context):
         return await update.message.reply_text("Admin only.")
 
-    chat_id = update.effective_chat.id
-    warns = get_all_warnings(chat_id)
-
+    warns = get_all_warnings(update.effective_chat.id)
     if not warns:
         return await update.message.reply_text("No warnings.")
 
@@ -145,142 +207,125 @@ async def status(update, context):
     await update.message.reply_text(msg)
 
 
-# ───────────── APPEAL ─────────────
-
+# ---------------------------------------------------------
+#                        APPEALS
+# ---------------------------------------------------------
 async def appeal(update, context):
     chat = update.effective_chat
-    user = update.effective_user
+    user  = update.effective_user
+    bot   = context.bot
 
-    # Only DM se appeal
     if chat.type != "private":
-        return await update.message.reply_text("DM me to appeal.")
+        return await update.message.reply_text("DM me to use /appeal.")
 
     if user.id not in pending_appeals:
-        return await update.message.reply_text("No active ban appeal found.")
+        return await update.message.reply_text("No active bans found.")
 
     appeal_text = " ".join(context.args)
     if not appeal_text:
-        return await update.message.reply_text("Usage: /appeal <message>")
+        return await update.message.reply_text("Usage: /appeal <reason>")
 
-    group_id = pending_appeals[user.id]
+    # ALL groups where user is banned
+    groups = list(pending_appeals[user.id])
 
-    # Appeal count badhao
+    # Count += 1
     count = appeal_counts.get(user.id, 0) + 1
     appeal_counts[user.id] = count
 
-    # 1–4: AI se auto decision
-    if count <= 4:
+    # ---------- AI DECISION (1–2) ----------
+    if count <= 2:
         decision = evaluate_appeal(appeal_text)
-        log_appeal(user.id, group_id, appeal_text, decision["approve"])
 
         if decision["approve"]:
-            try:
-                await context.bot.unban_chat_member(group_id, user.id)
-            except Exception:
-                pass
+            for gid in groups:
+                log_appeal(user.id, gid, appeal_text, True)
+                try:
+                    await bot.unban_chat_member(gid, user.id)
+                except:
+                    pass
 
-            await update.message.reply_text("Appeal Approved! You are unbanned.")
-            del pending_appeals[user.id]
+            await update.message.reply_text("✅ Appeal Approved! You are unbanned everywhere.")
+
+            # cleanup
+            pending_appeals.pop(user.id, None)
             appeal_counts.pop(user.id, None)
 
-            # Group ko info (ye bhi temp message bana sakte ho)
-            try:
-                await send_temp_message(
-                    chat=await context.bot.get_chat(group_id),
-                    text=f"🔓 Appeal approved for {user.first_name}"
-                )
-            except Exception:
-                pass
         else:
-            await update.message.reply_text(
-                "Appeal Rejected.\nReason: " + decision["reason"]
-            )
+            for gid in groups:
+                log_appeal(user.id, gid, appeal_text, False)
+
+            await update.message.reply_text("❌ Appeal Rejected.\n" + decision["reason"])
+
         return
 
-    # 5th se aage: admin ke paas manual review ke liye bhejo
-    admin_target = OWNER_ID or group_id
+    # ------------ ADMIN REVIEW (3rd+) ------------
+    primary_gid = groups[0]
+    admin_target = OWNER_ID or primary_gid
 
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                "✅ Approve User",
-                callback_data=f"approve:{group_id}:{user.id}",
-            )
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Approve User", callback_data=f"approve:{user.id}")]
+    ])
 
-    # admin ko detail bhejo
     try:
-        await context.bot.send_message(
+        await bot.send_message(
             admin_target,
-            (
-                f"⚠️ Max appeals reached.\n"
-                f"User: {user.first_name} (ID: {user.id})\n"
-                f"Group ID: {group_id}\n\n"
-                f"Last appeal message:\n{appeal_text}"
-            ),
-            reply_markup=reply_markup,
+            f"⚠️ Manual Review Needed\nUser: {user.first_name} ({user.id})\nAppeal:\n{appeal_text}",
+            reply_markup=kb
         )
-    except Exception:
+    except:
         pass
 
-    await update.message.reply_text(
-        "Your appeal has been sent to the group admin for manual review."
-    )
+    await update.message.reply_text("Your appeal has been sent to admin.")
 
 
-# ───────────── INLINE BUTTON: ADMIN APPROVE ─────────────
-
+# -------- ADMIN APPROVE BUTTON --------
 async def approve_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    bot = context.bot
+
     await query.answer()
 
     try:
-        _, chat_id_str, user_id_str = query.data.split(":")
-        chat_id = int(chat_id_str)
+        _, user_id_str = query.data.split(":")
         user_id = int(user_id_str)
-    except Exception:
-        await query.edit_message_text("Invalid approval data.")
-        return
+    except:
+        return await query.edit_message_text("Error.")
 
-    # Unban + cleanup
-    try:
-        await context.bot.unban_chat_member(chat_id, user_id)
-    except Exception:
-        pass
+    groups = list(pending_appeals.get(user_id, []))
 
+    for gid in groups:
+        try:
+            await bot.unban_chat_member(gid, user_id)
+        except:
+            pass
+
+    # cleanup
     pending_appeals.pop(user_id, None)
     appeal_counts.pop(user_id, None)
 
-    # User ko DM
     try:
-        await context.bot.send_message(
-            user_id,
-            "✅ Your appeal was approved by admin. You can now rejoin the group.",
-        )
-    except Exception:
+        await bot.send_message(user_id, "Your appeal was approved by admin.")
+    except:
         pass
 
-    await query.edit_message_text(f"User {user_id} approved ✅")
+    await query.edit_message_text("User unbanned from all groups. ✅")
 
 
-# ───────────── MODERATION ─────────────
-
+# ---------------------------------------------------------
+#                      MESSAGE MODERATION
+# ---------------------------------------------------------
 async def handle_message(update, context):
     message = update.effective_message
-    chat = update.effective_chat
-    user = update.effective_user
+    chat    = update.effective_chat
+    user    = update.effective_user
+    bot     = context.bot
 
     if chat.type == "private":
         return
-
     if user.is_bot:
         return
-
-    # ───────────── ADMIN BYPASS ─────────────
     if await is_admin(update, context):
-        return  # admin ko kuch na bole
+        return
 
     text = message.text or message.caption
     if not text:
@@ -294,23 +339,22 @@ async def handle_message(update, context):
 
     result = moderate_message(text, user, chat, rules_text)
 
-    action = result["action"]
-    reason = result["reason"]
-    severity = result["severity"]
+    action       = result["action"]
+    reason       = result["reason"]
     should_delete = result["should_delete"]
 
-    # User ka message delete (agar AI bole)
-    if should_delete or action in ["warn", "mute", "ban", "delete"]:
+    # delete user message
+    if should_delete or action in ["warn", "mute", "ban"]:
         try:
             await message.delete()
-        except Exception:
+        except:
             pass
 
     if action == "allow":
         return
 
+    # Warning count update
     warns = increment_warning(chat_id, user_id)
-
     log_action(chat_id, user_id, action, reason)
 
     response = (
@@ -322,69 +366,74 @@ async def handle_message(update, context):
 
     # WARN
     if action == "warn":
-        # group message 9 sec baad auto delete
-        return await send_temp_message(chat, response, seconds=10)
+        return await send_temp_message(chat, response, 10)
 
     # MUTE
     if action == "mute":
         until = datetime.utcnow() + timedelta(minutes=MUTE_DURATION_MIN)
         try:
-            await chat.restrict_member(
-                user_id,
-                ChatPermissions(can_send_messages=False),
-                until_date=until,
-            )
-        except Exception:
+            await chat.restrict_member(user_id, ChatPermissions(can_send_messages=False), until)
+        except:
             pass
-        return await send_temp_message(
-            chat,
-            response + f"\nMuted {MUTE_DURATION_MIN} min.",
-            seconds=9,
-        )
+        return await send_temp_message(chat, response + "\nMuted.", 10)
 
     # BAN
     if action == "ban" or warns >= MAX_WARNINGS:
         try:
             await chat.ban_member(user_id)
-        except Exception:
+        except:
             pass
 
-        pending_appeals[user_id] = chat_id
+        # Track multi-group ban
+        if user_id not in pending_appeals:
+            pending_appeals[user_id] = set()
+        pending_appeals[user_id].add(chat_id)
 
-        # User ko DM me appeal info
+        # DM user
         try:
-            await context.bot.send_message(
-                user_id,
-                "⛔ You were banned.\nAppeal: /appeal <reason>",
-            )
-        except Exception:
+            await bot.send_message(user_id, "⛔ You were banned.\nUse /appeal <reason>")
+        except:
             pass
 
-        await send_temp_message(
-            chat,
-            response + "\nUser Banned.",
-            seconds=9,
-        )
+        await send_temp_message(chat, response + "\nUser Banned.", 10)
         reset_warnings(chat_id, user_id)
 
 
-# ───────────── BOT RUN ─────────────
+# ---------------------------------------------------------
+#                   COMING SOON
+# ---------------------------------------------------------
+async def coming_soon(update, context):
+    await update.message.reply_text(
+        "🚧 Coming Soon:\n"
+        "- Advanced analytics dashboard\n"
+        "- Custom punishments\n"
+        "- Auto profile levels\n"
+        "- Flood control upgrade"
+    )
 
+
+# ---------------------------------------------------------
+#                     BOT RUNNER
+# ---------------------------------------------------------
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("setrule", setrule))
     app.add_handler(CommandHandler("rules", show_rules))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("appeal", appeal))
+    app.add_handler(CommandHandler("soon", coming_soon))
 
-    # Inline approve button handler
-    app.add_handler(CallbackQueryHandler(approve_user, pattern=r"^approve:"))
+    # Verify / Welcome
+    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member))
 
-    app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
-    )
+    # Admin approval
+    app.add_handler(CallbackQueryHandler(approve_user, pattern=r"^approve"))
+
+    # Message moderation
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     app.run_polling()
 
