@@ -154,8 +154,7 @@ async def appeal(update, context):
 
 
 # ───────────── MODERATION ─────────────
-
-async def handle_message(update, context):
+ async def handle_message(update, context):
     message = update.effective_message
     chat = update.effective_chat
     user = update.effective_user
@@ -165,6 +164,10 @@ async def handle_message(update, context):
 
     if user.is_bot:
         return
+
+    # ───────────── ADMIN BYPASS (NEW) ─────────────
+    if await is_admin(update, context):
+        return  # admin ko kuch na bole
 
     text = message.text or message.caption
     if not text:
@@ -183,6 +186,7 @@ async def handle_message(update, context):
     severity = result["severity"]
     should_delete = result["should_delete"]
 
+    # Auto-delete or punishable actions
     if should_delete or action in ["warn", "mute", "ban", "delete"]:
         try:
             await message.delete()
