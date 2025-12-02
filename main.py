@@ -323,7 +323,7 @@ async def handle_message(update, context):
     # WARN
     if action == "warn":
         # group message 9 sec baad auto delete
-        return await send_temp_message(chat, response, seconds=100)
+        return await send_temp_message(chat, response, seconds=10)
 
     # MUTE
     if action == "mute":
