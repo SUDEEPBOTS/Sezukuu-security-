@@ -63,7 +63,7 @@ async def is_admin(update, context):
 
 # ───────────── HELPER: TEMP MESSAGE (AUTO DELETE) ─────────────
 
-async def send_temp_message(chat, text: str, seconds: int = 9):
+async def send_temp_message(chat, text: str, seconds: int = 20):
     """
     Group me action message send karega,
     aur 'seconds' ke baad auto delete kar dega.
