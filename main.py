@@ -129,11 +129,51 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # DM: deep-link verify
     if context.args and context.args[0].startswith("verify_"):
-        try:
-            group_id = int(context.args[0].split("_", 1)[1])
-        except Exception:
-            return await update.message.reply_text("Invalid verify link.")
+    try:
+        group_id = int(context.args[0].split("_")[1])
+    except:
+        return await update.message.reply_text("Invalid verify link.")
 
+    # UNMUTE THE USER (THIS IS THE CORRECT FUNCTION)
+    try:
+        await context.bot.restrict_chat_member(
+            group_id,
+            user.id,
+            permissions=ChatPermissions(
+                can_send_messages=True,
+                can_send_media_messages=True,
+                can_send_other_messages=True,
+                can_add_web_page_previews=True,
+            ),
+        )
+    except Exception as e:
+        return await update.message.reply_text(
+            f"⚠️ Unmute failed.\nReason: {e}\n"
+            f"Make sure bot has 'Restrict Members' permission in group."
+        )
+
+    # OPTIONAL: VERIFY BUTTON DELETE
+    key = (group_id, user.id)
+    msg_id = pending_verifications.get(key)
+    if msg_id:
+        try:
+            await context.bot.delete_message(group_id, msg_id)
+        except:
+            pass
+
+    # SUCCESS MESSAGE
+    await update.message.reply_text("✅ Successfully verified and unmuted!")
+
+    # SEND MESSAGE TO GROUP
+    try:
+        await context.bot.send_message(
+            group_id,
+            f"{user.first_name} is verified and unmuted! ✅"
+        )
+    except:
+        pass
+
+    return
         # profile ensure
         add_user(user.id, user.username or user.first_name)
 
