@@ -296,130 +296,147 @@ async def appeal(update, context):
     chat = update.effective_chat
     user = update.effective_user
     bot = context.bot
+    user_id = user.id
 
-    # Only DM se appeal
+    # Only DM me appeal
     if chat.type != "private":
         return await update.message.reply_text("DM me /appeal bhejo.")
 
-    user_id = user.id
-
+    # Appeal exist check
     if user_id not in pending_appeals or not pending_appeals[user_id]:
-        return await update.message.reply_text("No active ban appeal found.")
+        return await update.message.reply_text("No active ban/mute appeal found.")
 
     appeal_text = " ".join(context.args)
     if not appeal_text:
-        return await update.message.reply_text("Usage: /appeal <message>")
+        return await update.message.reply_text("Usage: /appeal <reason>")
 
     group_ids = list(pending_appeals[user_id])
 
-    # total attempts
+    # Attempt Counter
     attempt_count = appeal_attempt_counts.get(user_id, 0) + 1
     appeal_attempt_counts[user_id] = attempt_count
 
+    # Approved Counter
     approved_count = appeal_approved_counts.get(user_id, 0)
 
-    # ✅ Rule:
-    #  - Jab tak APPROVED < 3 → AI se decision
-    #  - jab 3 baar approve ho chuka -> aage ke appeal direct admin ke paas
-
+    # ------------------------------
+    # ⭐ AI AUTO-HANDLING (Until 3 approvals)
+    # ------------------------------
     if approved_count < 3:
         decision = evaluate_appeal(appeal_text)
 
         if decision["approve"]:
-            # log + unban sabhi groups se
+            # UNBAN + UNMUTE sabhi groups me
             for gid in group_ids:
                 log_appeal(user_id, gid, appeal_text, True)
+
+                # Try unban
                 try:
                     await bot.unban_chat_member(gid, user_id)
-                except Exception:
+                except:
                     pass
 
+                # Try unmute (full unrestricted)
+                try:
+                    await bot.restrict_chat_member(
+                        gid,
+                        user_id,
+                        permissions=ChatPermissions()
+                    )
+                except:
+                    pass
+
+            # Approved count +1
             appeal_approved_counts[user_id] = approved_count + 1
 
             await update.message.reply_text(
-                "✅ Appeal Approved!\nAap sabhi groups se unbanned ho gaye jaha bot ne ban kiya tha."
+                "✅ Appeal Approved!\n"
+                "Aap sabhi groups me unbanned/unmuted ho gaye ho."
             )
 
-            # groups ko info (temp message)
+            # Background group notifications (NO FREEZE)
             for gid in group_ids:
-    try:
-        gc = await bot.get_chat(gid)
-        asyncio.create_task(
-            send_temp_message(
-                gc,
-                f"🔓 Appeal approved for {user.first_name}",
-                180
-            )
-        )
-    except Exception:
-        pass
-            # ek successful appeal ke baad ye ban cycle khatam
+                try:
+                    gc = await bot.get_chat(gid)
+                    asyncio.create_task(
+                        send_temp_message(
+                            gc,
+                            f"🔓 Appeal approved for {user.first_name}",
+                            180
+                        )
+                    )
+                except:
+                    pass
+
+            # Clear appeal record
             pending_appeals.pop(user_id, None)
             appeal_attempt_counts.pop(user_id, None)
 
+            return
+
         else:
-            # reject
+            # AI Rejection
             for gid in group_ids:
                 log_appeal(user_id, gid, appeal_text, False)
 
-            await update.message.reply_text(
+            return await update.message.reply_text(
                 "❌ Appeal Rejected.\nReason: " + decision["reason"]
             )
 
-        return
-
-    # yaha aaya matlab 3+ approved pe aa chuke ho → manual admin review
-
+    # ------------------------------
+    # ⭐ ADMIN REVIEW (3+ AI approvals)
+    # ------------------------------
     primary_gid = group_ids[0]
+
     try:
         primary_chat = await bot.get_chat(primary_gid)
         primary_name = primary_chat.title or str(primary_gid)
         join_button = []
+
         if primary_chat.username:
-            # public group: join link
             join_button = [
                 InlineKeyboardButton(
                     "➡ Join Group",
                     url=f"https://t.me/{primary_chat.username}",
                 )
             ]
-        else:
-            join_button = []
-
-    except Exception:
+    except:
         primary_name = str(primary_gid)
         join_button = []
 
     admin_target = OWNER_ID or primary_gid
 
+    # Inline buttons
     keyboard_buttons = [
         InlineKeyboardButton(
             "✅ Approve User",
             callback_data=f"approve:{user_id}",
         )
     ]
+
     if join_button:
         keyboard_buttons.append(join_button[0])
 
     reply_markup = InlineKeyboardMarkup([keyboard_buttons])
 
+    # Send to admin
     try:
         await bot.send_message(
             admin_target,
             (
-                f"⚠️ Max auto-appeals reached.\n"
+                f"⚠️ Max auto-appeal limit reached.\n"
                 f"User: {user.first_name} (ID: {user_id})\n"
                 f"Primary group: {primary_name} (id={primary_gid})\n"
-                f"Total Approved Appeals: {approved_count}\n\n"
-                f"Last appeal message:\n{appeal_text}"
+                f"Total AI Approved Appeals: {approved_count}\n\n"
+                f"Last Appeal Message:\n{appeal_text}"
             ),
             reply_markup=reply_markup,
         )
-    except Exception:
+    except:
         pass
 
     await update.message.reply_text(
-        "Aapka appeal ab admin ke paas manual review ke liye gaya hai. ⏳"
+        "Aapka appeal admin ke paas manual review ke liye bheja gaya hai. ⏳"
     )
 
 
