@@ -342,15 +342,17 @@ async def appeal(update, context):
 
             # groups ko info (temp message)
             for gid in group_ids:
-                try:
-                    gc = await bot.get_chat(gid)
-                    await send_temp_message(
-                        gc,
-                        f"🔓 Appeal approved for {user.first_name}",
-                    )
-                except Exception:
-                    pass
-
+    try:
+        gc = await bot.get_chat(gid)
+        asyncio.create_task(
+            send_temp_message(
+                gc,
+                f"🔓 Appeal approved for {user.first_name}",
+                180
+            )
+        )
+    except Exception:
+        pass
             # ek successful appeal ke baad ye ban cycle khatam
             pending_appeals.pop(user_id, None)
             appeal_attempt_counts.pop(user_id, None)
