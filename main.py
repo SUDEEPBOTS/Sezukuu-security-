@@ -523,9 +523,10 @@ async def handle_message(update, context):
 
     # WARN
     if action == "warn":
-        # group message 3 min baad auto delete
-        return await send_temp_message(chat, response, seconds=180)
-
+        # background me chalega, bot freeze nahi hoga
+        asyncio.create_task(send_temp_message(chat, response, seconds=180))
+        return
+        
     # MUTE
     if action == "mute":
         until = datetime.utcnow() + timedelta(minutes=MUTE_DURATION_MIN)
@@ -537,11 +538,15 @@ async def handle_message(update, context):
             )
         except Exception:
             pass
-        return await send_temp_message(
-            chat,
-            response + f"\nMuted {MUTE_DURATION_MIN} min.",
-            seconds=180,
+
+        asyncio.create_task(
+            send_temp_message(
+                chat,
+                response + f"\nMuted {MUTE_DURATION_MIN} min.",
+                seconds=180,
+            )
         )
+        return
 
     # BAN
     if action == "ban" or warns >= MAX_WARNINGS:
@@ -555,7 +560,7 @@ async def handle_message(update, context):
             pending_appeals[user_id] = set()
         pending_appeals[user_id].add(chat_id)
 
-        # User ko DM me ban + reason + appeal info
+        # User ko DM
         try:
             await bot.send_message(
                 user_id,
@@ -566,13 +571,16 @@ async def handle_message(update, context):
         except Exception:
             pass
 
-        await send_temp_message(
-            chat,
-            response + "\nUser Banned.",
-            seconds=180,
+        asyncio.create_task(
+            send_temp_message(
+                chat,
+                response + "\nUser Banned.",
+                seconds=180,
+            )
         )
-        reset_warnings(chat_id, user_id)
 
+        reset_warnings(chat_id, user_id)
+        return
 
 # ───────────── COMING SOON ─────────────
 
