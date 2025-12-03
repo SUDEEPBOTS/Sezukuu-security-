@@ -138,21 +138,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # UNMUTE USER
         try:
-            await context.bot.restrict_chat_member(
-                group_id,
-                user.id,
-                permissions=ChatPermissions(
-                    can_send_messages=True,
-                    can_send_media_messages=True,
-                    can_send_other_messages=True,
-                    can_add_web_page_previews=True,
-                ),
-            )
-        except Exception as e:
-            return await update.message.reply_text(
-                f"⚠️ Unmute failed.\nReason: {e}\n"
-                f"Make sure bot has 'Restrict Members' permission in group."
-            )
+    await context.bot.restrict_chat_member(
+        group_id,
+        user.id,
+        permissions=ChatPermissions(
+            can_send_messages=True,
+            can_send_other_messages=True,
+            can_add_web_page_previews=True
+        ),
+    )
+except Exception as e:
+    return await update.message.reply_text(
+        f"⚠️ Unmute failed.\nReason: {e}\n"
+        f"Make sure bot has 'Restrict Members' permission in group."
+    )
 
         # DELETE VERIFY BUTTON
         key = (group_id, user.id)
