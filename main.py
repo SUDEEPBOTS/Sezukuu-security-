@@ -14,7 +14,6 @@ from telegram.ext import (
     MessageHandler,
     ContextTypes,
     CallbackQueryHandler,
-    ChatMemberHandler,
     filters,
 )
 
@@ -26,7 +25,7 @@ from config import (
     ENABLE_AUTO_BAN,
     ENABLE_AUTO_DELETE,
     ENABLE_AUTO_MUTE,
-    LOGGER_CHAT_ID,
+    LOGGER_CHAT_ID,  # NEW
 )
 from models import (
     add_group,
@@ -57,29 +56,13 @@ appeal_approved_counts = {}
 # (chat_id, user_id) -> verify-message-id
 pending_verifications = {}
 
-# ───────────── PERMISSIONS PRESETS ─────────────
-
-# Full unmuted permissions (saari cheeze allow)
-FULL_PERMS = ChatPermissions.all_permissions()  # PTB helper for all True [web:31]
-
-# Fully muted permissions (kuch bhi send nahi kar sakta)
-MUTE_PERMS = ChatPermissions(
-    can_send_messages=False,
-    can_send_audios=False,
-    can_send_documents=False,
-    can_send_photos=False,
-    can_send_videos=False,
-    can_send_video_notes=False,
-    can_send_voice_notes=False,
-    can_send_polls=False,
-    can_send_other_messages=False,
-    can_add_web_page_previews=False,
-)
-
 
 # ───────────── LOGGER HELPERS ─────────────
 
 async def log_to_logger(text: str, bot):
+    """
+    Logger group pe message bhejta hai (agar LOGGER_CHAT_ID set hai)
+    """
     if not LOGGER_CHAT_ID:
         return
     try:
@@ -102,9 +85,13 @@ async def is_admin(update, context):
     return member.status in ["administrator", "creator"]
 
 
-# ───────────── HELPER: TEMP MESSAGE (AUTO DELETE) ─────────────
+# ───────────── HELPER: TEMP MESSAGE (AUTO DELETE 3 MIN) ─────────────
 
 async def send_temp_message(chat, text: str, seconds: int = 180):
+    """
+    Group me action message send karega,
+    aur 'seconds' ke baad auto delete kar dega (default 3 min).
+    """
     try:
         msg = await chat.send_message(text)
     except Exception:
@@ -114,6 +101,7 @@ async def send_temp_message(chat, text: str, seconds: int = 180):
         await asyncio.sleep(seconds)
         await msg.delete()
     except Exception:
+        # agar delete fail ho jaye (rights / already deleted) to ignore
         pass
 
 
@@ -126,6 +114,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     add_user(user.id, user.username or user.first_name)
 
+    # logger me /start ki info
     await log_to_logger(
         f"🔹 /start used by {user.first_name} (id={user.id}) in chat {chat.id} ({chat.type})",
         bot,
@@ -135,8 +124,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat.type != "private":
         add_group(chat.id, chat.title, user.id)
         return await update.message.reply_text(
-            "🤖 AI Moderator Active.
-Use /setrule to add rules."
+            "🤖 AI Moderator Active.\nUse /setrule to add rules."
         )
 
     # -----------------------------
@@ -145,21 +133,23 @@ Use /setrule to add rules."
     if context.args and context.args[0].startswith("verify_"):
         try:
             group_id = int(context.args[0].split("_")[1])
-        except Exception:
+        except:
             return await update.message.reply_text("Invalid verify link.")
 
-        # UNMUTE USER (full permissions)
+# UNMUTE USER
         try:
             await context.bot.restrict_chat_member(
                 group_id,
                 user.id,
-                permissions=FULL_PERMS,
+                permissions=ChatPermissions(
+                    can_send_messages=True,
+                    can_send_other_messages=True,
+                    can_add_web_page_previews=True
+                ),
             )
         except Exception as e:
             return await update.message.reply_text(
-                f"⚠️ Unmute failed.
-Reason: {e}
-"
+                f"⚠️ Unmute failed.\nReason: {e}\n"
                 f"Make sure bot has 'Restrict Members' permission in group."
             )
 
@@ -169,13 +159,12 @@ Reason: {e}
         if msg_id:
             try:
                 await bot.delete_message(group_id, msg_id)
-            except Exception:
+            except:
                 pass
 
         # DM SUCCESS
         await update.message.reply_text(
-            "✅ Successfully verified!
-Ab aap group me freely chat kar sakte ho."
+            "✅ Successfully verified!\nAb aap group me freely chat kar sakte ho."
         )
 
         # GROUP ANNOUNCEMENT
@@ -184,20 +173,18 @@ Ab aap group me freely chat kar sakte ho."
                 group_id,
                 f"{user.first_name} is verified and unmuted! ✅"
             )
-        except Exception:
+        except:
             pass
 
-        return
+        return  # STOP HERE
 
     # -----------------------------
     # Normal DM /start
     # -----------------------------
     await update.message.reply_text(
-        "👋 This is AI moderation bot.
-"
+        "👋 This is AI moderation bot.\n"
         "Agar aap banned ho gaye ho to /appeal <reason> bhejo."
     )
-
 
 # ───────────── NEW MEMBER WELCOME + VERIFY ─────────────
 
@@ -216,6 +203,7 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     for member in new_members:
         # agar bot khud group me add hua hai
         if member.id == bot_user.id:
+            # logger me info
             await log_to_logger(
                 f"✅ Bot added to group: {chat.title} (id={chat.id})",
                 bot,
@@ -225,6 +213,7 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if member.is_bot:
             continue
 
+        # profile create
         add_user(member.id, member.username or member.first_name)
 
         # mute user until verify
@@ -232,23 +221,24 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await bot.restrict_chat_member(
                 chat.id,
                 member.id,
-                permissions=MUTE_PERMS,
+                permissions=ChatPermissions(can_send_messages=False),
             )
         except Exception:
             pass
 
+        # verify link
         verify_link = f"https://t.me/{bot_username}?start=verify_{chat.id}"
 
         try:
             sent = await context.bot.send_message(
                 chat.id,
-                f"Welcome {member.first_name}! 👋
-"
+                f"Welcome {member.first_name}! 👋\n"
                 f"Please verify to chat in this group.",
                 reply_markup=InlineKeyboardMarkup(
                     [[InlineKeyboardButton("✅ Verify", url=verify_link)]]
                 ),
             )
+            # store button message id for delete after verify
             pending_verifications[(chat.id, member.id)] = sent.message_id
         except Exception:
             pass
@@ -269,12 +259,9 @@ async def setrule(update, context):
     add_rule_db(chat_id, text)
 
     rules = get_rules_db(chat_id)
-    rr = "
-".join([f"{i+1}. {r}" for i, r in enumerate(rules)])
+    rr = "\n".join([f"{i+1}. {r}" for i, r in enumerate(rules)])
 
-    await update.message.reply_text(f"Rule Added!
-
-{rr}")
+    await update.message.reply_text(f"Rule Added!\n\n{rr}")
 
 
 async def show_rules(update, context):
@@ -282,11 +269,8 @@ async def show_rules(update, context):
     if not rules:
         return await update.message.reply_text("No rules set.")
 
-    rr = "
-".join([f"{i+1}. {r}" for i, r in enumerate(rules)])
-    await update.message.reply_text(f"📜 RULES:
-
-{rr}")
+    rr = "\n".join([f"{i+1}. {r}" for i, r in enumerate(rules)])
+    await update.message.reply_text(f"📜 RULES:\n\n{rr}")
 
 
 async def status(update, context):
@@ -299,11 +283,9 @@ async def status(update, context):
     if not warns:
         return await update.message.reply_text("No warnings.")
 
-    msg = "⚠️ WARNINGS:
-"
+    msg = "⚠️ WARNINGS:\n"
     for w in warns:
-        msg += f"User {w['user_id']} → {w['warnings']}
-"
+        msg += f"User {w['user_id']} → {w['warnings']}\n"
 
     await update.message.reply_text(msg)
 
@@ -351,7 +333,7 @@ async def appeal(update, context):
                 # Try unban
                 try:
                     await bot.unban_chat_member(gid, user_id)
-                except Exception:
+                except:
                     pass
 
                 # Try unmute (full unrestricted)
@@ -359,21 +341,20 @@ async def appeal(update, context):
                     await bot.restrict_chat_member(
                         gid,
                         user_id,
-                        permissions=FULL_PERMS,
+                        permissions=ChatPermissions()
                     )
-                except Exception:
+                except:
                     pass
 
             # Approved count +1
             appeal_approved_counts[user_id] = approved_count + 1
 
             await update.message.reply_text(
-                "✅ Appeal Approved!
-"
+                "✅ Appeal Approved!\n"
                 "Aap sabhi groups me unbanned/unmuted ho gaye ho."
             )
 
-            # Background group notifications
+            # Background group notifications (NO FREEZE)
             for gid in group_ids:
                 try:
                     gc = await bot.get_chat(gid)
@@ -381,10 +362,10 @@ async def appeal(update, context):
                         send_temp_message(
                             gc,
                             f"🔓 Appeal approved for {user.first_name}",
-                            180,
+                            180
                         )
                     )
-                except Exception:
+                except:
                     pass
 
             # Clear appeal record
@@ -399,8 +380,7 @@ async def appeal(update, context):
                 log_appeal(user_id, gid, appeal_text, False)
 
             return await update.message.reply_text(
-                "❌ Appeal Rejected.
-Reason: " + decision["reason"]
+                "❌ Appeal Rejected.\nReason: " + decision["reason"]
             )
 
     # ------------------------------
@@ -420,21 +400,18 @@ Reason: " + decision["reason"]
                     url=f"https://t.me/{primary_chat.username}",
                 )
             ]
-    except Exception:
+    except:
         primary_name = str(primary_gid)
         join_button = []
 
     admin_target = OWNER_ID or primary_gid
 
+    # Inline buttons
     keyboard_buttons = [
         InlineKeyboardButton(
             "✅ Approve User",
             callback_data=f"approve:{user_id}",
-        ),
-        InlineKeyboardButton(
-            "❌ Reject",
-            callback_data=f"reject:{user_id}",
-        ),
+        )
     ]
 
     if join_button:
@@ -442,25 +419,20 @@ Reason: " + decision["reason"]
 
     reply_markup = InlineKeyboardMarkup([keyboard_buttons])
 
+    # Send to admin
     try:
         await bot.send_message(
             admin_target,
             (
-                f"⚠️ Max auto-appeal limit reached.
-"
-                f"User: {user.first_name} (ID: {user_id})
-"
-                f"Primary group: {primary_name} (id={primary_gid})
-"
-                f"Total AI Approved Appeals: {approved_count}
-
-"
-                f"Last Appeal Message:
-{appeal_text}"
+                f"⚠️ Max auto-appeal limit reached.\n"
+                f"User: {user.first_name} (ID: {user_id})\n"
+                f"Primary group: {primary_name} (id={primary_gid})\n"
+                f"Total AI Approved Appeals: {approved_count}\n\n"
+                f"Last Appeal Message:\n{appeal_text}"
             ),
             reply_markup=reply_markup,
         )
-    except Exception:
+    except:
         pass
 
     await update.message.reply_text(
@@ -491,17 +463,10 @@ async def approve_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await bot.unban_chat_member(gid, user_id)
         except Exception:
             pass
-        try:
-            await bot.restrict_chat_member(
-                gid,
-                user_id,
-                permissions=FULL_PERMS,
-            )
-        except Exception:
-            pass
 
     pending_appeals.pop(user_id, None)
     appeal_attempt_counts.pop(user_id, None)
+    # approved count ko bhi reset kar sakte hain
     appeal_approved_counts.pop(user_id, None)
 
     # User ko DM
@@ -514,42 +479,7 @@ async def approve_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
     try:
-        await query.edit_message_text("User unbanned/unmuted from all tracked groups. ✅")
-    except Exception:
-        pass
-
-
-# ───────────── INLINE BUTTON: ADMIN REJECT ─────────────
-
-async def reject_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-
-    await query.answer()
-
-    try:
-        _, user_id_str = query.data.split(":")
-        user_id = int(user_id_str)
-    except Exception:
-        await query.edit_message_text("Invalid rejection data.")
-        return
-
-    # Just clear tracking; user banned/muted hi rahega
-    pending_appeals.pop(user_id, None)
-    appeal_attempt_counts.pop(user_id, None)
-    # approved count ko bhi reset kar sakte hain
-    appeal_approved_counts.pop(user_id, None)
-
-    # User ko DM
-    try:
-        await context.bot.send_message(
-            user_id,
-            "❌ Your appeal was rejected by admin.",
-        )
-    except Exception:
-        pass
-
-    try:
-        await query.edit_message_text("Appeal rejected. User stays banned/muted.")
+        await query.edit_message_text("User unbanned from all tracked groups. ✅")
     except Exception:
         pass
 
@@ -570,7 +500,7 @@ async def handle_message(update, context):
 
     # ───────────── ADMIN BYPASS ─────────────
     if await is_admin(update, context):
-        return
+        return  # admin ko kuch na bole
 
     text = message.text or message.caption
     if not text:
@@ -580,8 +510,7 @@ async def handle_message(update, context):
     user_id = user.id
 
     rules = get_rules_db(chat_id)
-    rules_text = "
-".join(rules)
+    rules_text = "\n".join(rules)
 
     result = moderate_message(text, user, chat, rules_text)
 
@@ -590,7 +519,7 @@ async def handle_message(update, context):
     severity = result["severity"]
     should_delete = result["should_delete"]
 
-    # Delete user message if needed
+    # User ka message delete (agar AI bole)
     if should_delete or action in ["warn", "mute", "ban", "delete"]:
         try:
             await message.delete()
@@ -605,42 +534,56 @@ async def handle_message(update, context):
     log_action(chat_id, user_id, action, reason)
 
     response = (
-        f"🚨 Rule Violation
-"
-        f"User: {user.first_name}
-"
-        f"Reason: {reason}
-"
+        f"🚨 Rule Violation\n"
+        f"User: {user.first_name}\n"
+        f"Reason: {reason}\n"
         f"Warnings: {warns}/{MAX_WARNINGS}"
     )
 
     # WARN
     if action == "warn":
+        # background me chalega, bot freeze nahi hoga
         asyncio.create_task(send_temp_message(chat, response, seconds=180))
         return
-
+        
     # MUTE
-    if action == "mute":
-        until = datetime.utcnow() + timedelta(minutes=MUTE_DURATION_MIN)
-        try:
-            await chat.restrict_member(
-                user_id,
-                MUTE_PERMS,
-                until_date=until,
-            )
-        except Exception:
-            pass
-
-        asyncio.create_task(
-            send_temp_message(
-                chat,
-                response + f"
-Muted {MUTE_DURATION_MIN} min.",
-                seconds=180,
-            )
+if action == "mute":
+    until = datetime.utcnow() + timedelta(minutes=MUTE_DURATION_MIN)
+    try:
+        await chat.restrict_member(
+            user_id,
+            ChatPermissions(can_send_messages=False),
+            until_date=until,
         )
-        return
+    except Exception:
+        pass
 
+    # USER ko DM me mute info
+    try:
+        await bot.send_message(
+            user_id,
+            f"🔇 You were muted in '{chat.title}'.\n"
+            f"Reason: {reason}\n"
+            f"Duration: {MUTE_DURATION_MIN} minutes\n\n"
+            f"Agar aapko lagta hai ki galti se hua, to /appeal <reason> bhejo."
+        )
+    except Exception:
+        pass
+
+    # ⭐ MUTE ko appeal system me register karo
+    if user_id not in pending_appeals:
+        pending_appeals[user_id] = set()
+    pending_appeals[user_id].add(chat_id)
+
+    # background temp message (no freeze)
+    asyncio.create_task(
+        send_temp_message(
+            chat,
+            response + f"\nMuted {MUTE_DURATION_MIN} min.",
+            seconds=180,
+        )
+    )
+    return
     # BAN
     if action == "ban" or warns >= MAX_WARNINGS:
         try:
@@ -657,11 +600,8 @@ Muted {MUTE_DURATION_MIN} min.",
         try:
             await bot.send_message(
                 user_id,
-                f"⛔ You were banned from '{chat.title}'.
-"
-                f"Reason: {reason}
-
-"
+                f"⛔ You were banned from '{chat.title}'.\n"
+                f"Reason: {reason}\n\n"
                 f"Agar aapko lagta hai galti se hua, to /appeal <reason> bhejo.",
             )
         except Exception:
@@ -670,8 +610,7 @@ Muted {MUTE_DURATION_MIN} min.",
         asyncio.create_task(
             send_temp_message(
                 chat,
-                response + "
-User Banned.",
+                response + "\nUser Banned.",
                 seconds=180,
             )
         )
@@ -679,45 +618,16 @@ User Banned.",
         reset_warnings(chat_id, user_id)
         return
 
-
 # ───────────── COMING SOON ─────────────
 
 async def coming_soon(update, context):
     await update.message.reply_text(
-        "🚧 Coming Soon:
-"
-        "- Advanced analytics dashboard
-"
-        "- Custom punishments per rule
-"
-        "- Flood / spam shield
-"
-        "- Auto backup & restore
-"
+        "🚧 Coming Soon:\n"
+        "- Advanced analytics dashboard\n"
+        "- Custom punishments per rule\n"
+        "- Flood / spam shield\n"
+        "- Auto backup & restore\n"
     )
-
-
-# ───────────── GOODBYE ON LEAVE ─────────────
-
-async def goodbye_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    LEFT_CHAT_MEMBER: jab koi user group chhodta hai, simple goodbye.
-    """
-    msg = update.effective_message
-    chat = update.effective_chat
-
-    if not msg or not msg.left_chat_member:
-        return
-
-    user = msg.left_chat_member
-
-    try:
-        await context.bot.send_message(
-            chat.id,
-            f"Goodbye {user.first_name} 👋",
-        )
-    except Exception:
-        pass
 
 
 # ───────────── ERROR HANDLER (LOGGER) ─────────────
@@ -726,11 +636,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Exception while handling update:", exc_info=context.error)
     try:
         await log_to_logger(
-            f"⚠️ Error occurred:
-{context.error}
-
-Update:
-{update}",
+            f"⚠️ Error occurred:\n{context.error}\n\nUpdate:\n{update}",
             context.bot,
         )
     except Exception:
@@ -758,17 +664,8 @@ def main():
         )
     )
 
-    # user left goodbye
-    app.add_handler(
-        MessageHandler(
-            filters.StatusUpdate.LEFT_CHAT_MEMBER,
-            goodbye_message,
-        )
-    )
-
-    # Inline approve/reject button handlers
+    # Inline approve button handler
     app.add_handler(CallbackQueryHandler(approve_user, pattern=r"^approve:"))
-    app.add_handler(CallbackQueryHandler(reject_user, pattern=r"^reject:"))
 
     # Message moderation
     app.add_handler(
