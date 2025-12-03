@@ -128,29 +128,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     # DM: deep-link verify
+    # DM: deep-link verify
     if context.args and context.args[0].startswith("verify_"):
-    try:
-        group_id = int(context.args[0].split("_")[1])
-    except:
-        return await update.message.reply_text("Invalid verify link.")
+        try:
+            group_id = int(context.args[0].split("_")[1])
+        except:
+            return await update.message.reply_text("Invalid verify link.")
 
-    # UNMUTE THE USER (THIS IS THE CORRECT FUNCTION)
-    try:
-        await context.bot.restrict_chat_member(
-            group_id,
-            user.id,
-            permissions=ChatPermissions(
-                can_send_messages=True,
-                can_send_media_messages=True,
-                can_send_other_messages=True,
-                can_add_web_page_previews=True,
-            ),
-        )
-    except Exception as e:
-        return await update.message.reply_text(
-            f"⚠️ Unmute failed.\nReason: {e}\n"
-            f"Make sure bot has 'Restrict Members' permission in group."
-        )
+        # UNMUTE THE USER (THIS IS THE CORRECT FUNCTION)
+        try:
+            await context.bot.restrict_chat_member(
+                group_id,
+                user.id,
+                permissions=ChatPermissions(
+                    can_send_messages=True,
+                    can_send_media_messages=True,
+                    can_send_other_messages=True,
+                    can_add_web_page_previews=True,
+                ),
+            )
+        except Exception as e:
+            return await update.message.reply_text(
+                f"⚠️ Unmute failed.\nReason: {e}\n"
+                f"Make sure bot has 'Restrict Members' permission in group."
+            )
 
     # OPTIONAL: VERIFY BUTTON DELETE
     key = (group_id, user.id)
