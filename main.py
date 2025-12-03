@@ -547,26 +547,43 @@ async def handle_message(update, context):
         return
         
     # MUTE
-    if action == "mute":
-        until = datetime.utcnow() + timedelta(minutes=MUTE_DURATION_MIN)
-        try:
-            await chat.restrict_member(
-                user_id,
-                ChatPermissions(can_send_messages=False),
-                until_date=until,
-            )
-        except Exception:
-            pass
-
-        asyncio.create_task(
-            send_temp_message(
-                chat,
-                response + f"\nMuted {MUTE_DURATION_MIN} min.",
-                seconds=180,
-            )
+if action == "mute":
+    until = datetime.utcnow() + timedelta(minutes=MUTE_DURATION_MIN)
+    try:
+        await chat.restrict_member(
+            user_id,
+            ChatPermissions(can_send_messages=False),
+            until_date=until,
         )
-        return
+    except Exception:
+        pass
 
+    # USER ko DM me mute info
+    try:
+        await bot.send_message(
+            user_id,
+            f"🔇 You were muted in '{chat.title}'.\n"
+            f"Reason: {reason}\n"
+            f"Duration: {MUTE_DURATION_MIN} minutes\n\n"
+            f"Agar aapko lagta hai ki galti se hua, to /appeal <reason> bhejo."
+        )
+    except Exception:
+        pass
+
+    # ⭐ MUTE ko appeal system me register karo
+    if user_id not in pending_appeals:
+        pending_appeals[user_id] = set()
+    pending_appeals[user_id].add(chat_id)
+
+    # background temp message (no freeze)
+    asyncio.create_task(
+        send_temp_message(
+            chat,
+            response + f"\nMuted {MUTE_DURATION_MIN} min.",
+            seconds=180,
+        )
+    )
+    return
     # BAN
     if action == "ban" or warns >= MAX_WARNINGS:
         try:
