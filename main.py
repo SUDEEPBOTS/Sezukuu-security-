@@ -171,7 +171,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await bot.send_message(
                 group_id,
-                f"{user.first_name} is verified and unmuted! ✅"
+                f"{user.first_name} ɪꜱ ᴠᴇʀɪꜰɪᴇᴅ ᴀɴᴅ ᴜɴᴍᴜᴛᴇᴅ! 🍷"
             )
         except:
             pass
@@ -182,8 +182,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Normal DM /start
     # -----------------------------
     await update.message.reply_text(
-        "👋 This is AI moderation bot.\n"
-        "Agar aap banned ho gaye ho to /appeal <reason> bhejo."
+        "👋 Hello I am ai admin.\n"
+        " ""futures coming soon""."
     )
 
 # ───────────── NEW MEMBER WELCOME + VERIFY ─────────────
